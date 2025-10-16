@@ -1,0 +1,307 @@
+#include <mik32_memory_map.h>
+#include <pad_config.h>
+#include <gpio.h>
+#include <power_manager.h>
+#include <wakeup.h>
+
+#define	MIK32V2		// Используется в HAL библиотеках для выбора способов инициализации аппаратуры
+
+#include "uart_lib.h"
+#include "xprintf.h"
+#include "scr1_timer.h"
+#include "mik32_hal_adc.h"
+#include "mik32_hal_pcc.h"
+#include "mik32_hal_irq.h"
+#include "mik32_hal_wdt.h"
+#include "mik32_hal_i2c.h"
+#include "spifi.h"
+#include "common.h"
+#include "hardware.h"
+#include "modbus.h"
+
+const char *WELCOME_TEXT = HARDWARE_NAME " " HARDWARE_VER " " __TIME__ " " __DATE__ "\r\n";
+ 
+extern void work(void);
+
+//Дефайны для обработки Modbus
+#define MAX_BYTE_FRAME 512 //Емкость кольцевого буфера
+#define NUM_HOLDING_REG 60 //Количество регистров в модбас карте (Holding register)
+#define SYS_CLOCK_HIGH 80 //Время в отчетах для приема байта по UART
+			  
+//Переменные для обработки прерываний по UART, запись байтов запроса в массив
+unsigned char rx_data_byte;
+unsigned char rx_data_array[MAX_BYTE_FRAME];
+volatile uint16_t count = 0;
+volatile uint16_t count_res[5];
+volatile uint8_t flag_rx_frame = 0;      //Флаг принятого пакета/количество принятых пакетов
+volatile uint32_t deff_sys_time = 0;     //Разница во времени
+volatile uint32_t sys_timer_prev = 3;    //Системное время
+
+//Массив Holding Register достпный для мастера
+uint16_t  holding_data[NUM_HOLDING_REG];
+
+//Промежуточные переменные
+sCircularBuffer buff; //Кольцевой буфер
+uint8_t  tx_mb_data[MAX_BYTE_FRAME];    //Указатель на динамический массив данных для отправки ответа мастеру
+uint8_t  slave_id = 0x01;               //Адрес слейва (текущий у данного устройства)
+uint8_t  function = 0x00;               //Функция запроса от мастера
+uint16_t first_reg = 0x0000;            //Адрес первого запрашиваемого регистра в запросе от мастера
+uint16_t num_reg   = 0x0000;            //Количество регистров запрашиваемых от мастера
+uint16_t num_byte_in_frame = 0;         //Количество байтов в запросе
+
+//Доп настройки интерфейса
+volatile uint32_t RsSpeed = 115200;     //Скорость работы интерфейса RS
+volatile uint8_t  Parity = 0; 		//Четность интерфейса RS (0 - NONE; 1 - ODD: 2 - EVEN)
+volatile uint8_t  StopBit = 1; 		//Количество стоп битов (1 - 1 стоп бит; 2 - 2 стоп бита)
+
+//Обьявление для  АЦП
+ADC_HandleTypeDef hadc; 		//Структура для АЦП
+uint16_t type_ai[3] = {1,1,1};   	//Определение типа аналогового входа для каждого канала (0 - 0_20мА; 1 - 4_20мА; 2 - 0_5В)
+int high_eng[3] = {100,100,100}; 	//Значения верхнего диапазона в инженерных единицах
+int low_eng[3] = {0,0,0}; 		//Значения нижнего диапазона в инженерных единицах
+float res_eng[3];	   		//Вычисленное результирующее значение в инженерных единицах
+uint16_t adc_value = 0;     		//Измеренное значение АЦП
+
+
+void InitClock(void)
+{
+ 	// включение тактирования периферии 
+	PM->CLK_APB_P_SET |=	PM_CLOCK_APB_P_UART_0_M |
+		   		PM_CLOCK_APB_P_UART_1_M |
+				PM_CLOCK_APB_P_GPIO_0_M |
+				PM_CLOCK_APB_P_GPIO_1_M |
+				PM_CLOCK_APB_P_GPIO_2_M |
+				PM_CLOCK_APB_P_TIMER16_1_M |
+				PM_CLOCK_APB_P_WDT_M |
+				PM_CLOCK_APB_P_I2C_0_M |
+				PM_CLOCK_APB_P_ANALOG_REGS_M;
+
+	// включение тактирования блока для смены режима выводов
+	PM->CLK_APB_M_SET |=	PM_CLOCK_APB_M_PAD_CONFIG_M |
+				PM_CLOCK_APB_M_WU_M |
+				PM_CLOCK_APB_M_PM_M |
+				PM_CLOCK_APB_M_EPIC_M;
+
+	// Включение тактирования блока SPIFI (QSPI)
+	PM->CLK_AHB_SET =	PM_CLOCK_AHB_SPIFI_M;
+
+	// Инициализировать и запустить машинный (MTIME) таймер
+	SCR1_TIMER->TIMER_CTRL &= ~SCR1_TIMER_CTRL_CLKSRC_M; // По умолчанию - внутр.
+	//SCR1_TIMER->TIMER_CTRL |= SCR1_TIMER_CTRL_CLKSRC_INTERNAL_M;
+	SCR1_TIMER->TIMER_DIV = 32;
+	SCR1_TIMER->TIMER_CTRL |= SCR1_TIMER_CTRL_ENABLE_M;
+}
+
+__attribute__ ((used, section (".spifi.text")))
+
+void InitHardware(void)
+{
+	// Настраиваем выход для светодиодов
+	PAD_CFG_OUT(LED_GRN_PORT, LED_GRN_PIN);
+	PAD_CFG_OUT(LED_RED_PORT, LED_RED_PIN);
+	
+	// Настройка дискретных выходов (SSR1, SSR2, SSR3)
+	PAD_CFG_OUT(SSR1_PORT, SSR1_PIN);
+	PAD_CFG_OUT(SSR2_PORT, SSR2_PIN);
+	PAD_CFG_OUT(SSR3_PORT, SSR3_PIN);
+
+	// Настройка порта для управления RS485
+	PAD_CFG_OUT(RS485_EN_PORT, RS485_EN_PIN);
+	
+	// Настраиваем вход для MCU_ADDR[3:0] (P1.15 - P1.12) 
+	PAD_CFG_IN(MCU_ADDRx_PORT, MCU_ADDR0_PIN);
+	PAD_CFG_IN(MCU_ADDRx_PORT, MCU_ADDR1_PIN);
+	PAD_CFG_IN(MCU_ADDRx_PORT, MCU_ADDR2_PIN);
+	PAD_CFG_IN(MCU_ADDRx_PORT, MCU_ADDR3_PIN);
+	PAD_PUPD(MCU_ADDRx_PORT, MCU_ADDR0_PIN, HAL_GPIO_PULL_UP);
+	PAD_PUPD(MCU_ADDRx_PORT, MCU_ADDR1_PIN, HAL_GPIO_PULL_UP);
+	PAD_PUPD(MCU_ADDRx_PORT, MCU_ADDR2_PIN, HAL_GPIO_PULL_UP);
+	PAD_PUPD(MCU_ADDRx_PORT, MCU_ADDR3_PIN, HAL_GPIO_PULL_UP);
+
+	// Настраиваем вход для MCU_BAUD[1:0] (P1.7, P0.8) 
+	PAD_CFG_IN(MCU_BAUD1_PORT, MCU_BAUD1_PIN);
+	PAD_CFG_IN(MCU_BAUD0_PORT, MCU_BAUD0_PIN);
+	PAD_PUPD(MCU_BAUD1_PORT, MCU_BAUD1_PIN, HAL_GPIO_PULL_UP);
+	PAD_PUPD(MCU_BAUD0_PORT, MCU_BAUD0_PIN, HAL_GPIO_PULL_UP);
+
+	// Инициализация каналов АЦП
+	hadc.Instance = ANALOG_REG;
+    	hadc.Init.Sel = ADC_CHANNEL2;
+   	hadc.Init.EXTRef = ADC_EXTREF_ON;    		/* Выбор источника опорного напряжения: «1» - внешний; «0» - встроенный */
+    	hadc.Init.EXTClb = ADC_EXTCLB_ADCREF; 		/* Выбор источника внешнего опорного напряжения: «1» - внешний вывод; «0» - настраиваемый ОИН */
+    	HAL_ADC_Init(&hadc); 				/* Запись данных в структуру */
+}
+
+
+void Init_Uart_1(volatile uint32_t RsSpeed) //, volatile uint8_t Parity, volatile uint8_t Stopbit)//Функция инициализации UART 1
+{
+        // Установка параметров порта UART1
+        UART_Init(UART_1, OSC_SYSTEM_VALUE/RsSpeed, UART_CONTROL1_TE_M | UART_CONTROL1_RE_M |
+       	UART_CONTROL1_M_8BIT_M | UART_CONTROL1_RXNEIE_M , 0, 0); //PAD  не нужон так как в библиотеке уже все прописано
+}
+
+int main(void)
+{
+	int ret;
+
+	InitClock(); // Включение тактирования GPIO
+
+	// Установка параметров UART0 - отладочный порт
+	UART_Init(UART_0, OSC_SYSTEM_VALUE/115200, UART_CONTROL1_TE_M | UART_CONTROL1_RE_M |
+						   UART_CONTROL1_M_8BIT_M, 0, 0);
+	DelayMs(100);
+
+	xprintf(WELCOME_TEXT);
+
+	if(ret = spifi_init()) {
+		xprintf("SPIFI init failed, ret = %d\n", ret);
+		return ret;
+	}
+
+	if(ret = spifi_enable_xip()) {
+		xprintf("SPIFI XiP failed, ret = %d\n", ret);
+		return ret;
+	}
+
+	xprintf("Init hardware\n");
+
+	InitHardware();
+	Init_Uart_1(RsSpeed);
+
+        //Разрешить прерывания для UART_1
+        EPIC->MASK_EDGE_SET |= (1<<2);
+        set_csr(mstatus, (0x1 << 3));
+        set_csr(mie, (0x1 << 11));
+
+	xprintf("Running...\n");
+
+	while (1) {
+
+		// work(); // Функция моргания светодиода
+		
+		//Обработка значений АЦП 
+		ADC_SEL_CHANNEL(hadc.Instance, 2);
+        	HAL_ADC_SINGLE(hadc.Instance); // Первое измерение для переключение на канал 2.
+        	HAL_ADC_WaitValid(&hadc);
+        	for (uint32_t j = 0; j < 3; j++)
+        	{
+            		HAL_ADC_SINGLE_AND_SET_CH(hadc.Instance, (j + 2));
+           		adc_value = HAL_ADC_WaitAndGetValue(&hadc); // Ожидание и чтение актуальных данных (режим одиночного преобразования) 
+            		//xprintf("ADC[%u]: %u (V = %u,%03u)\n", j, adc_value, ((adc_value * 1200) / 4095) / 1000, ((adc_value * 1200) / 4095) % 1000);
+			holding_data[6+2*j] = adc_value; // Запись в модбас карту значений АЦП в отчетах
+			/*
+			high_eng[j] = holding_data[12+2*j]; //Считать значение вернего диапазона из модбас карты
+			low_eng[j] =  holding_data[13+2*j]; //Считать значение нижнего диапазона из модбас карты
+			type_ai[j] =  holding_data[7+2*j]; //Считать значение типа  диапазона из модбас карты
+			
+			if ((type_ai[j] == 0) || (type_ai[j] == 2))//Если выбран диапазон в 0 - 20мА или 0 - 5 Вольт
+			{
+				res_eng[j] = low_eng[j] + (adc_value>>12)*(high_eng[j] - low_eng[j]); //Расчет значения в инженерных единицах
+				
+				func_fl_to_reg(res_eng[j], 19+2*j , holding_data); //Положить результат расчета в модбас карту
+			}
+			*/
+		}
+
+		//Считывание дискретных входов
+		if (GPIO_STATE(MCU_BAUD0_PORT, MCU_BAUD0_PIN))
+			holding_data[4] |= (1<<0);
+		else 
+			holding_data[4] &= ~(1<<0);
+                
+		if (GPIO_STATE(MCU_BAUD1_PORT, MCU_BAUD1_PIN))
+                        holding_data[4] |= (1<<1);
+                else
+                        holding_data[4] &= ~(1<<1);
+
+		for(uint32_t j = 0; j < 4; j++)
+		{
+			if (GPIO_STATE(MCU_ADDRx_PORT, (j+12)))
+                        	holding_data[4] |= (1<<(2+j));
+                	else
+                        	holding_data[4] &= ~(1<<(2+j));
+		}
+
+		//Обработка дискретных выходов
+		if (holding_data[5] & (1 << 0)) 
+			GPIO_SET(SSR1_PORT, SSR1_PIN);
+		if (~holding_data[5] & (1 << 0))
+			GPIO_CLEAR(SSR1_PORT, SSR1_PIN);
+
+		if (holding_data[5] & (1 << 1))
+                        GPIO_SET(SSR2_PORT, SSR2_PIN);
+                if (~holding_data[5] & (1 << 1))
+                        GPIO_CLEAR(SSR2_PORT, SSR2_PIN);
+
+                if (holding_data[5] & (1 << 2))
+                        GPIO_SET(SSR3_PORT, SSR3_PIN);
+                if (~holding_data[5] & (1 << 2))
+                        GPIO_CLEAR(SSR3_PORT, SSR3_PIN);
+
+
+		//Обработка запросов от мастера
+                if (flag_rx_frame > 0)
+                {
+//                      for (volatile int z = 0; z < 100000; z++);
+//                      xprintf("Tx: ");
+//			for (volatile uint16_t i = 0; i < count_res[flag_rx_frame]; i++)
+//                      {
+//                                rx_data_array[i] = get(&buff);
+//                                xprintf("%x ", rx_data_array[i]);
+//                      }
+//                      xprintf("\r\n");
+//
+                        function = rx_data_array[1];
+                        
+			switch(function)
+                        {
+                        case 0x03:
+                                num_byte_in_frame = mb_slave_read(rx_data_array, tx_mb_data, count_res[flag_rx_frame], slave_id, function, holding_data, NUM_HOLDING_REG, first_reg);
+                                break;
+                        case 0x06:
+                                num_byte_in_frame = mb_slave_write_single(rx_data_array, tx_mb_data, count_res[flag_rx_frame], slave_id, function, holding_data, NUM_HOLDING_REG, first_reg);
+                                break;
+                        case 0x10:
+                                num_byte_in_frame = mb_slave_write_multi(rx_data_array, tx_mb_data, count_res[flag_rx_frame], slave_id, function, holding_data, NUM_HOLDING_REG, first_reg);
+                                break;
+                        default:
+                                break;
+                        }
+//                      	xprintf("Rx: ");
+//                      for (volatile uint16_t j = 0; j < num_byte_in_frame; j++)
+//                      	xprintf("%x ", tx_mb_data[j]);
+//                      xprintf("\r\n");
+                      	GPIO_SET(RS485_EN_PORT, RS485_EN_PIN);
+		      	UART_Write(UART_1, tx_mb_data , num_byte_in_frame);//Отправка ответа
+                      	GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN);
+			flag_rx_frame--;
+                }
+                if(isFull(&buff))
+                	clear(&buff);
+	}
+
+	return 0;
+}
+
+void trap_handler() //Функция при прирывании
+{
+        if(EPIC->RAW_STATUS & (1<<2))//Если прерывание пришло от модуля UART_1
+        {
+                if (UART_1 -> FLAGS & (1<<5))
+                {
+                        deff_sys_time = SCR1_TIMER->MTIME - sys_timer_prev;
+                        sys_timer_prev = SCR1_TIMER->MTIME;
+                        if((count > 0) && (deff_sys_time > SYS_CLOCK_HIGH))
+                        {
+                                flag_rx_frame++;
+                                count_res[flag_rx_frame] = count;
+                                count = 0;
+                        }
+                        UART_Read(UART_1, &rx_data_byte, 1);
+                        put(&buff, rx_data_byte);
+                        count++;
+                	UART_1 -> FLAGS |= (1<<5); //Сброс флага прерывания отUART_1
+                }
+                EPIC->CLEAR |= (1<<2);//Очистка прерываний по модулю GPIO
+        }
+}    
