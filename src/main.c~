@@ -241,8 +241,9 @@ int main(void)
 
 		//Обработка запросов от мастера
                 GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN); // На прием в не зависимости от условия
-		if (flag_rx_frame > 0 && count == 0)
+		if (flag_rx_frame > 0)
                 {
+			EPIC->MASK_EDGE_CLEAR |= (1<<2);
                       	xprintf("Tx: ");
 			for (volatile uint16_t i = 0; i < count_res[flag_rx_frame]; i++)
                       	{
@@ -270,21 +271,19 @@ int main(void)
                         for (volatile uint16_t j = 0; j < num_byte_in_frame; j++)
                         	xprintf("%x ", tx_mb_data[j]);
                         xprintf("\r\n");
-			//if(count == 0)
-			//{
-//			UART_1->CONTROL1 &= ~UART_CONTROL1_RE_M;
-	                GPIO_SET(RS485_EN_PORT, RS485_EN_PIN);
+	                
+			GPIO_SET(RS485_EN_PORT, RS485_EN_PIN);
 			DelayMs(10);
                 	UART_Write(UART_1, tx_mb_data , num_byte_in_frame);//Отправка ответа
 			DelayMs(1);
 			GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN);
         	        DelayMs(10);
-//			UART_1->CONTROL1 |= UART_CONTROL1_RE_M;
 			flag_rx_frame--;
-			//}
+			EPIC->MASK_EDGE_SET |= (1<<2);
                 }
-                if(isFull(&buff))
-                	clear(&buff);
+                
+		if(isFull(&buff))
+                	clear(&buff); //Очистка кольцевого буфера, если он переполнен
 //		work();
 	}
 
