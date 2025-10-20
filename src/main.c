@@ -36,7 +36,7 @@ volatile uint16_t count_res[5];
 volatile uint8_t flag_rx_frame = 0;      //Флаг принятого пакета/количество принятых пакетов
 volatile uint32_t deff_sys_time = 0;     //Разница во времени
 volatile uint32_t sys_timer_prev = 3;    //Системное время
-
+volatile uint8_t flag_rx_data = 2;  	 //Флаг для отправки данных
 //Массив Holding Register достпный для мастера
 uint16_t  holding_data[NUM_HOLDING_REG];
 
@@ -271,11 +271,13 @@ int main(void)
                         	xprintf("%x ", tx_mb_data[j]);
                         xprintf("\r\n");
 //	                UART_WaitReceiving(UART_1); //Ожидание приема байт
-			while (!(deff_sys_time > SYS_CLOCK_HIGH));
+//			while (!(deff_sys_time > SYS_CLOCK_HIGH));
+			flag_rx_data = 1;
 			GPIO_SET(RS485_EN_PORT, RS485_EN_PIN);
                 	UART_Write(UART_1, tx_mb_data , num_byte_in_frame);//Отправка ответа
 			UART_WaitTransmission(UART_1); //Ожидание передачи всех байт	
 			GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN);
+			flag_rx_data = 2;
 			flag_rx_frame--;
                 }
                 
@@ -291,7 +293,7 @@ void trap_handler() //Функция при прирывании
 {
         if(EPIC->RAW_STATUS & (1<<2))//Если прерывание пришло от модуля UART_1
         {
-                if (UART_1 -> FLAGS & (1<<5))
+                if ((UART_1 -> FLAGS & (1<<5)) && (flag_rx_data == 2))
                 {
 			deff_sys_time = SCR1_TIMER->MTIME - sys_timer_prev;
                         sys_timer_prev = SCR1_TIMER->MTIME;

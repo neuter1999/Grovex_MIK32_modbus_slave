@@ -270,7 +270,8 @@ int main(void)
                         for (volatile uint16_t j = 0; j < num_byte_in_frame; j++)
                         	xprintf("%x ", tx_mb_data[j]);
                         xprintf("\r\n");
-	                UART_WaitReceiving(UART_1); //Ожидание приема байт
+//	                UART_WaitReceiving(UART_1); //Ожидание приема байт
+			while (!(deff_sys_time > SYS_CLOCK_HIGH));
 			GPIO_SET(RS485_EN_PORT, RS485_EN_PIN);
                 	UART_Write(UART_1, tx_mb_data , num_byte_in_frame);//Отправка ответа
 			UART_WaitTransmission(UART_1); //Ожидание передачи всех байт	
