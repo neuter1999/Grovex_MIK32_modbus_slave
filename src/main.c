@@ -241,16 +241,16 @@ int main(void)
 
 		//Обработка запросов от мастера
                 GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN); // На прием в не зависимости от условия
-		if (flag_rx_frame > 0)
+		if (flag_rx_frame > 0 && count == 0)
                 {
-                      xprintf("Tx: ");
+                      	xprintf("Tx: ");
 			for (volatile uint16_t i = 0; i < count_res[flag_rx_frame]; i++)
-                      {
+                      	{
                                 rx_data_array[i] = get(&buff);
                                 xprintf("%x ", rx_data_array[i]);                      
-		      }
-                      xprintf("\r\n");
-//
+		      	}
+                     	 xprintf("\r\n");
+
                         function = rx_data_array[1];
 			switch(function)
                         {
@@ -272,14 +272,14 @@ int main(void)
                         xprintf("\r\n");
 			//if(count == 0)
 			//{
-			UART_1->CONTROL1 &= ~UART_CONTROL1_RE_M;
+//			UART_1->CONTROL1 &= ~UART_CONTROL1_RE_M;
 	                GPIO_SET(RS485_EN_PORT, RS485_EN_PIN);
 			DelayMs(10);
                 	UART_Write(UART_1, tx_mb_data , num_byte_in_frame);//Отправка ответа
 			DelayMs(1);
 			GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN);
         	        DelayMs(10);
-			UART_1->CONTROL1 |= UART_CONTROL1_RE_M;
+//			UART_1->CONTROL1 |= UART_CONTROL1_RE_M;
 			flag_rx_frame--;
 			//}
                 }

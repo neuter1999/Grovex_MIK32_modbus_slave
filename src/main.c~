@@ -272,12 +272,14 @@ int main(void)
                         xprintf("\r\n");
 			//if(count == 0)
 			//{
+			UART_1->CONTROL1 &= ~UART_CONTROL1_RE_M;
 	                GPIO_SET(RS485_EN_PORT, RS485_EN_PIN);
 			DelayMs(10);
                 	UART_Write(UART_1, tx_mb_data , num_byte_in_frame);//Отправка ответа
 			DelayMs(1);
 			GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN);
         	        DelayMs(10);
+			UART_1->CONTROL1 |= UART_CONTROL1_RE_M;
 			flag_rx_frame--;
 			//}
                 }
