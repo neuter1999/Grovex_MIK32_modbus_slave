@@ -273,11 +273,9 @@ int main(void)
                         xprintf("\r\n");
 	                
 			GPIO_SET(RS485_EN_PORT, RS485_EN_PIN);
-			DelayMs(10);
                 	UART_Write(UART_1, tx_mb_data , num_byte_in_frame);//Отправка ответа
-			DelayMs(1);
+			UART_WaitTransmission(UART_1); //Ожидание передачи всех байт	
 			GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN);
-        	        DelayMs(10);
 			flag_rx_frame--;
 //			EPIC->MASK_EDGE_SET |= (1<<2);
                 }
