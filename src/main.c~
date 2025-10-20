@@ -26,7 +26,7 @@ extern void work(void);
 //Дефайны для обработки Modbus
 #define MAX_BYTE_FRAME 512 //Емкость кольцевого буфера
 #define NUM_HOLDING_REG 60 //Количество регистров в модбас карте (Holding register)
-#define SYS_CLOCK_HIGH 80 //Время в отчетах для приема байта по UART
+#define SYS_CLOCK_HIGH 20000 //Время в отчетах для приема байта по UART
 			  
 //Переменные для обработки прерываний по UART, запись байтов запроса в массив
 unsigned char rx_data_byte;
@@ -50,7 +50,7 @@ uint16_t num_reg   = 0x0000;            //Количество регистро�
 uint16_t num_byte_in_frame = 0;         //Количество байтов в запросе
 
 //Доп настройки интерфейса
-volatile uint32_t RsSpeed = 115200;     //Скорость работы интерфейса RS
+volatile uint32_t RsSpeed = 9600;     //Скорость работы интерфейса RS
 volatile uint8_t  Parity = 0; 		//Четность интерфейса RS (0 - NONE; 1 - ODD: 2 - EVEN)
 volatile uint8_t  StopBit = 1; 		//Количество стоп битов (1 - 1 стоп бит; 2 - 2 стоп бита)
 
@@ -133,10 +133,10 @@ void InitHardware(void)
 }
 
 
-void Init_Uart_1(volatile uint32_t RsSpeed); //, volatile uint8_t Parity, volatile uint8_t Stopbit)//Функция инициализации UART 1
+void Init_Uart_1(void) //volatile uint32_t RsSpeed) //, volatile uint8_t Parity, volatile uint8_t Stopbit)//Функция инициализации UART 1
 {
         // Установка параметров порта UART1
-        UART_Init(UART_1, OSC_SYSTEM_VALUE/RsSpeed, UART_CONTROL1_TE_M | UART_CONTROL1_RE_M |
+        UART_Init(UART_1, OSC_SYSTEM_VALUE/9600, UART_CONTROL1_TE_M | UART_CONTROL1_RE_M |
        	UART_CONTROL1_M_8BIT_M | UART_CONTROL1_RXNEIE_M , 0, 0); //PAD  не нужон так как в библиотеке уже все прописано
 }
 
@@ -166,7 +166,7 @@ int main(void)
 	xprintf("Init hardware\n");
 
 	InitHardware();
-	Init_Uart_1(RsSpeed);
+	Init_Uart_1();
 
         //Разрешить прерывания для UART_1
         EPIC->MASK_EDGE_SET |= (1<<2);
@@ -240,23 +240,22 @@ int main(void)
 
 
 		//Обработка запросов от мастера
-                if (flag_rx_frame > 0)
+                GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN); // На прием в не зависимости от условия
+		if (flag_rx_frame > 0)
                 {
-//                      for (volatile int z = 0; z < 100000; z++);
-//                      xprintf("Tx: ");
-//			for (volatile uint16_t i = 0; i < count_res[flag_rx_frame]; i++)
-//                      {
-//                                rx_data_array[i] = get(&buff);
-//                                xprintf("%x ", rx_data_array[i]);
-//                      }
-//                      xprintf("\r\n");
+                      xprintf("Tx: ");
+			for (volatile uint16_t i = 0; i < count_res[flag_rx_frame]; i++)
+                      {
+                                rx_data_array[i] = get(&buff);
+                                xprintf("%x ", rx_data_array[i]);                      
+		      }
+                      xprintf("\r\n");
 //
                         function = rx_data_array[1];
-                        
 			switch(function)
                         {
                         case 0x03:
-                                num_byte_in_frame = mb_slave_read(rx_data_array, tx_mb_data, count_res[flag_rx_frame], slave_id, function, holding_data, NUM_HOLDING_REG, first_reg);
+                                num_byte_in_frame = mb_slave_read(rx_data_array, tx_mb_data, count_res[flag_rx_frame], slave_id, function, holding_data, NUM_HOLDING_REG, first_reg); 
                                 break;
                         case 0x06:
                                 num_byte_in_frame = mb_slave_write_single(rx_data_array, tx_mb_data, count_res[flag_rx_frame], slave_id, function, holding_data, NUM_HOLDING_REG, first_reg);
@@ -267,17 +266,24 @@ int main(void)
                         default:
                                 break;
                         }
-//                      	xprintf("Rx: ");
-//                      for (volatile uint16_t j = 0; j < num_byte_in_frame; j++)
-//                      	xprintf("%x ", tx_mb_data[j]);
-//                      xprintf("\r\n");
-                      	GPIO_SET(RS485_EN_PORT, RS485_EN_PIN);
-		      	UART_Write(UART_1, tx_mb_data , num_byte_in_frame);//Отправка ответа
-                      	GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN);
+                       	xprintf("Rx: ");
+                        for (volatile uint16_t j = 0; j < num_byte_in_frame; j++)
+                        	xprintf("%x ", tx_mb_data[j]);
+                        xprintf("\r\n");
+			//if(count == 0)
+			//{
+	                GPIO_SET(RS485_EN_PORT, RS485_EN_PIN);
+			DelayMs(10);
+                	UART_Write(UART_1, tx_mb_data , num_byte_in_frame);//Отправка ответа
+			DelayMs(1);
+			GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN);
+        	        DelayMs(10);
 			flag_rx_frame--;
+			//}
                 }
                 if(isFull(&buff))
                 	clear(&buff);
+//		work();
 	}
 
 	return 0;
@@ -289,9 +295,9 @@ void trap_handler() //Функция при прирывании
         {
                 if (UART_1 -> FLAGS & (1<<5))
                 {
-                        deff_sys_time = SCR1_TIMER->MTIME - sys_timer_prev;
+			deff_sys_time = SCR1_TIMER->MTIME - sys_timer_prev;
                         sys_timer_prev = SCR1_TIMER->MTIME;
-                        if((count > 0) && (deff_sys_time > SYS_CLOCK_HIGH))
+			if((count > 0) && (deff_sys_time > SYS_CLOCK_HIGH))
                         {
                                 flag_rx_frame++;
                                 count_res[flag_rx_frame] = count;
