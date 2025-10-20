@@ -243,7 +243,6 @@ int main(void)
                 GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN); // На прием в не зависимости от условия
 		if (flag_rx_frame > 0)
                 {
-//			EPIC->MASK_EDGE_CLEAR |= (1<<2);
                       	xprintf("Tx: ");
 			for (volatile uint16_t i = 0; i < count_res[flag_rx_frame]; i++)
                       	{
@@ -271,13 +270,12 @@ int main(void)
                         for (volatile uint16_t j = 0; j < num_byte_in_frame; j++)
                         	xprintf("%x ", tx_mb_data[j]);
                         xprintf("\r\n");
-	                
+	                UART_WaitReceiving(UART_1); //Ожидание приема байт
 			GPIO_SET(RS485_EN_PORT, RS485_EN_PIN);
                 	UART_Write(UART_1, tx_mb_data , num_byte_in_frame);//Отправка ответа
 			UART_WaitTransmission(UART_1); //Ожидание передачи всех байт	
 			GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN);
 			flag_rx_frame--;
-//			EPIC->MASK_EDGE_SET |= (1<<2);
                 }
                 
 		if(isFull(&buff))
