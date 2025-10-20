@@ -306,8 +306,8 @@ void trap_handler() //Функция при прирывании
                         UART_Read(UART_1, &rx_data_byte, 1);
                         put(&buff, rx_data_byte);
                         count++;
-                	UART_1 -> FLAGS |= (1<<5); //Сброс флага прерывания отUART_1
-                }
+		}
+             	UART_1 -> FLAGS |= (1<<5); //Сброс флага прерывания отUART_1   
                 EPIC->CLEAR |= (1<<2);//Очистка прерываний по модулю GPIO
         }
 }    
