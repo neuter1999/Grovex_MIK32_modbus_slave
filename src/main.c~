@@ -26,8 +26,9 @@ extern void work(void);
 //Дефайны для обработки Modbus
 #define MAX_BYTE_FRAME 512 //Емкость кольцевого буфера
 #define NUM_HOLDING_REG 60 //Количество регистров в модбас карте (Holding register)
-#define SYS_CLOCK_HIGH 20000 //Время в отчетах для приема байта по UART
-			  
+#define SYS_CLOCK_HIGH 100000 //Время в отчетах для приема байта по UART
+
+#define	ADC_CHANNELS	3
 //Переменные для обработки прерываний по UART, запись байтов запроса в массив
 unsigned char rx_data_byte;
 unsigned char rx_data_array[MAX_BYTE_FRAME];
@@ -36,7 +37,6 @@ volatile uint16_t count_res[5];
 volatile uint8_t flag_rx_frame = 0;      //Флаг принятого пакета/количество принятых пакетов
 volatile uint32_t deff_sys_time = 0;     //Разница во времени
 volatile uint32_t sys_timer_prev = 3;    //Системное время
-volatile uint8_t flag_rx_data = 2;  	 //Флаг для отправки данных
 //Массив Holding Register достпный для мастера
 uint16_t  holding_data[NUM_HOLDING_REG];
 
@@ -55,13 +55,13 @@ volatile uint8_t  Parity = 0; 		//Четность интерфейса RS (0 - 
 volatile uint8_t  StopBit = 1; 		//Количество стоп битов (1 - 1 стоп бит; 2 - 2 стоп бита)
 
 //Обьявление для  АЦП
-ADC_HandleTypeDef hadc; 		//Структура для АЦП
+ADC_HandleTypeDef hadc2; 		//Структуры для АЦП
+ADC_HandleTypeDef hadc3;
+ADC_HandleTypeDef hadc4;
 uint16_t type_ai[3] = {1,1,1};   	//Определение типа аналогового входа для каждого канала (0 - 0_20мА; 1 - 4_20мА; 2 - 0_5В)
 int high_eng[3] = {100,100,100}; 	//Значения верхнего диапазона в инженерных единицах
 int low_eng[3] = {0,0,0}; 		//Значения нижнего диапазона в инженерных единицах
 float res_eng[3];	   		//Вычисленное результирующее значение в инженерных единицах
-uint16_t adc_value = 0;     		//Измеренное значение АЦП
-
 
 void InitClock(void)
 {
@@ -125,11 +125,24 @@ void InitHardware(void)
 	PAD_PUPD(MCU_BAUD0_PORT, MCU_BAUD0_PIN, HAL_GPIO_PULL_UP);
 
 	// Инициализация каналов АЦП
-	hadc.Instance = ANALOG_REG;
-    	hadc.Init.Sel = ADC_CHANNEL2;
-   	hadc.Init.EXTRef = ADC_EXTREF_ON;    		/* Выбор источника опорного напряжения: «1» - внешний; «0» - встроенный */
-    	hadc.Init.EXTClb = ADC_EXTCLB_ADCREF; 		/* Выбор источника внешнего опорного напряжения: «1» - внешний вывод; «0» - настраиваемый ОИН */
-    	HAL_ADC_Init(&hadc); 				/* Запись данных в структуру */
+	hadc2.Instance = ANALOG_REG;
+    	hadc2.Init.Sel = ADC_CHANNEL2;
+   	hadc2.Init.EXTRef = ADC_EXTREF_ON;    		/* Выбор источника опорного напряжения: «1» - внешний; «0» - встроенный */
+    	hadc2.Init.EXTClb = ADC_EXTCLB_ADCREF; 		/* Выбор источника внешнего опорного напряжения: «1» - внешний вывод; «0» - настраиваемый ОИН */
+    	HAL_ADC_Init(&hadc2); 				/* Запись данных в структуру */
+
+        hadc3.Instance = ANALOG_REG;
+        hadc3.Init.Sel = ADC_CHANNEL2;
+        hadc3.Init.EXTRef = ADC_EXTREF_ON;              /* Выбор источника опорного напряжения: «1» - внешний; «0» - встроенный */
+        hadc3.Init.EXTClb = ADC_EXTCLB_ADCREF;          /* Выбор источника внешнего опорного напряжения: «1» - внешний вывод; «0» - настраиваемый ОИН */
+        HAL_ADC_Init(&hadc3);                           /* Запись данных в структуру */
+
+	hadc4.Instance = ANALOG_REG;
+        hadc4.Init.Sel = ADC_CHANNEL2;
+        hadc4.Init.EXTRef = ADC_EXTREF_ON;              /* Выбор источника опорного напряжения: «1» - внешний; «0» - встроенный */
+        hadc4.Init.EXTClb = ADC_EXTCLB_ADCREF;          /* Выбор источника внешнего опорного напряжения: «1» - внешний вывод; «0» - настраиваемый ОИН */
+        HAL_ADC_Init(&hadc4);                           /* Запись данных в структуру */
+
 }
 
 
@@ -174,34 +187,37 @@ int main(void)
         set_csr(mie, (0x1 << 11));
 
 	xprintf("Running...\n");
-
 	while (1) {
 
 		// work(); // Функция моргания светодиода
 		
 		//Обработка значений АЦП 
-		ADC_SEL_CHANNEL(hadc.Instance, 2);
-        	HAL_ADC_SINGLE(hadc.Instance); // Первое измерение для переключение на канал 2.
-        	HAL_ADC_WaitValid(&hadc);
-        	for (uint32_t j = 0; j < 3; j++)
+       		ADC_SEL_CHANNEL(hadc2.Instance, 2);
+        	HAL_ADC_SINGLE(hadc2.Instance); // Первое измерение для переключение на канал 2.
+        	HAL_ADC_WaitValid(&hadc2);
+        	for (uint32_t j = 0; j < 5; j++)
         	{
-            		HAL_ADC_SINGLE_AND_SET_CH(hadc.Instance, (j + 2));
-           		adc_value = HAL_ADC_WaitAndGetValue(&hadc); // Ожидание и чтение актуальных данных (режим одиночного преобразования) 
-            		//xprintf("ADC[%u]: %u (V = %u,%03u)\n", j, adc_value, ((adc_value * 1200) / 4095) / 1000, ((adc_value * 1200) / 4095) % 1000);
-			holding_data[6+2*j] = adc_value; // Запись в модбас карту значений АЦП в отчетах
-			/*
-			high_eng[j] = holding_data[12+2*j]; //Считать значение вернего диапазона из модбас карты
-			low_eng[j] =  holding_data[13+2*j]; //Считать значение нижнего диапазона из модбас карты
-			type_ai[j] =  holding_data[7+2*j]; //Считать значение типа  диапазона из модбас карты
-			
-			if ((type_ai[j] == 0) || (type_ai[j] == 2))//Если выбран диапазон в 0 - 20мА или 0 - 5 Вольт
-			{
-				res_eng[j] = low_eng[j] + (adc_value>>12)*(high_eng[j] - low_eng[j]); //Расчет значения в инженерных единицах
-				
-				func_fl_to_reg(res_eng[j], 19+2*j , holding_data); //Положить результат расчета в модбас карту
-			}
-			*/
+            		HAL_ADC_SINGLE_AND_SET_CH(hadc2.Instance, (j + 2) % 5);
+            		holding_data[8] = HAL_ADC_WaitAndGetValue(&hadc2);
 		}
+		ADC_SEL_CHANNEL(hadc3.Instance, 3);
+                HAL_ADC_SINGLE(hadc3.Instance); // Первое измерение для переключение на канал 3.
+                HAL_ADC_WaitValid(&hadc3);
+                for (uint32_t j = 0; j < 5; j++)
+                {
+                        HAL_ADC_SINGLE_AND_SET_CH(hadc3.Instance, (j + 3) % 5);
+                        holding_data[10] = HAL_ADC_WaitAndGetValue(&hadc3);
+                }
+		ADC_SEL_CHANNEL(hadc4.Instance, 4);
+                HAL_ADC_SINGLE(hadc4.Instance); // Первое измерение для переключение на канал 4.
+                HAL_ADC_WaitValid(&hadc4);
+                for (uint32_t j = 0; j < 5; j++)
+                {
+                        HAL_ADC_SINGLE_AND_SET_CH(hadc4.Instance, (j + 4) % 5);
+                        holding_data[12] = HAL_ADC_WaitAndGetValue(&hadc4);
+                }
+
+
 
 		//Считывание дискретных входов
 		if (GPIO_STATE(MCU_BAUD0_PORT, MCU_BAUD0_PIN))
@@ -224,7 +240,10 @@ int main(void)
 
 		//Обработка дискретных выходов
 		if (holding_data[5] & (1 << 0)) 
+		{
 			GPIO_SET(SSR1_PORT, SSR1_PIN);
+			xprintf("%d \r\n", holding_data[5]);
+		}
 		if (~holding_data[5] & (1 << 0))
 			GPIO_CLEAR(SSR1_PORT, SSR1_PIN);
 
@@ -237,21 +256,21 @@ int main(void)
                         GPIO_SET(SSR3_PORT, SSR3_PIN);
                 if (~holding_data[5] & (1 << 2))
                         GPIO_CLEAR(SSR3_PORT, SSR3_PIN);
-
-
+		
 		//Обработка запросов от мастера
                 GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN); // На прием в не зависимости от условия
 		if (flag_rx_frame > 0)
                 {
-                      	xprintf("Tx: ");
+//                      xprintf("Tx: ");
 			for (volatile uint16_t i = 0; i < count_res[flag_rx_frame]; i++)
                       	{
                                 rx_data_array[i] = get(&buff);
-                                xprintf("%x ", rx_data_array[i]);                      
+//                                xprintf("%x ", rx_data_array[i]);                      
 		      	}
-                     	 xprintf("\r\n");
+//                     	 xprintf("\r\n");
 
                         function = rx_data_array[1];
+	
 			switch(function)
                         {
                         case 0x03:
@@ -272,12 +291,14 @@ int main(void)
                         xprintf("\r\n");
 //	                UART_WaitReceiving(UART_1); //Ожидание приема байт
 //			while (!(deff_sys_time > SYS_CLOCK_HIGH));
-			flag_rx_data = 1;
+//			UART_1->CONTROL1 &= ~(UART_CONTROL1_TE_M);
+			DelayMs(5);
 			GPIO_SET(RS485_EN_PORT, RS485_EN_PIN);
+			DelayMs(5);
                 	UART_Write(UART_1, tx_mb_data , num_byte_in_frame);//Отправка ответа
 			UART_WaitTransmission(UART_1); //Ожидание передачи всех байт	
 			GPIO_CLEAR(RS485_EN_PORT, RS485_EN_PIN);
-			flag_rx_data = 2;
+			DelayMs(5);
 			flag_rx_frame--;
                 }
                 
@@ -293,10 +314,11 @@ void trap_handler() //Функция при прирывании
 {
         if(EPIC->RAW_STATUS & (1<<2))//Если прерывание пришло от модуля UART_1
         {
-                if ((UART_1 -> FLAGS & (1<<5)) && (flag_rx_data == 2))
+                if (UART_1 -> FLAGS & (1<<5))
                 {
 			deff_sys_time = SCR1_TIMER->MTIME - sys_timer_prev;
                         sys_timer_prev = SCR1_TIMER->MTIME;
+//			xprintf(" %d ", deff_sys_time);
 			if((count > 0) && (deff_sys_time > SYS_CLOCK_HIGH))
                         {
                                 flag_rx_frame++;
@@ -306,8 +328,8 @@ void trap_handler() //Функция при прирывании
                         UART_Read(UART_1, &rx_data_byte, 1);
                         put(&buff, rx_data_byte);
                         count++;
-                	UART_1 -> FLAGS |= (1<<5); //Сброс флага прерывания отUART_1
-                }
-                EPIC->CLEAR |= (1<<2);//Очистка прерываний по модулю GPIO
+	             	UART_1 -> FLAGS |= (1<<5); //Сброс флага прерывания отUART_1   
+		}
+		EPIC->CLEAR |= (1<<2);//Очистка прерываний по модулю GPIO
         }
 }    
